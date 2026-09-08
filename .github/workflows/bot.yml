@@ -2,9 +2,8 @@ name: Executar Bot Crypto IA
 
 on:
   schedule:
-    # Roda automaticamente no minuto 5 de cada hora
     - cron: '5 * * * *'
-  workflow_dispatch: # Permite rodar manualmente pelo botão
+  workflow_dispatch:
 
 jobs:
   executar-bot:
@@ -24,9 +23,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install ccxt xgboost pandas numpy
 
-      - name: Listar arquivos (Debug)
-        run: ls -la
-
-      - name: Executar Varredura
+      - name: Executar Varredura e Negociação Automática
+        env:
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
         run: |
           python bot_top20.py
