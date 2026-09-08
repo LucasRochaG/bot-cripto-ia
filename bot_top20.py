@@ -8,14 +8,29 @@ from datetime import datetime
 
 warnings.filterwarnings('ignore')
 
+# ==========================================
+# CONFIGURAÇÕES E PARÂMETROS DE TRADING
+# ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'modelo_xgb_multi_1h.json')
 FEATURES = ['Retorno_1', 'Retorno_4', 'Volatilidade_24', 'Amplitude_Candle', 'MA50_Ratio', 'MA200_Ratio', 'RSI']
 
-# Usa a Binance sem nenhum tipo de bloqueio ou proxy no GitHub
-exchange = ccxt.binance({'enableRateLimit': True})
+# Conexão autenticada com a Binance usando as chaves seguras das variáveis de ambiente
+API_KEY = os.getenv('BINANCE_API_KEY')
+SECRET_KEY = os.getenv('BINANCE_SECRET_KEY')
+
+exchange = ccxt.binance({
+    'apiKey': API_KEY,
+    'secret': SECRET_KEY,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'spot'}  # Mercado à vista (Spot)
+})
+
 TIMEFRAME = '1h'
 LIMIAR_DECISAO = 0.70
+VALOR_INVESTIMENTO_USDT = 20.0  # Valor em dólares fixado para cada operação de compra
+STOP_LOSS_PCT = 0.02           # Stop Loss fixado em -2%
+TAKE_PROFIT_PCT = 0.04          # Take Profit fixado em +4%
 
 def obter_top20_moedas():
     """Filtra as 20 moedas USDT com maior volume na Binance."""
@@ -32,24 +47,50 @@ def obter_top20_moedas():
         print(f"⚠️ Erro ao buscar tickers: {e}")
         return [
             'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 
-            'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT', 
-            'BCH/USDT', 'ATOM/USDT', 'NEAR/USDT', 'APT/USDT', 'FIL/USDT', 
-            'ETC/USDT', 'XMR/USDT', 'ALGO/USDT', 'KAS/USDT', 'UNI/USDT'
+            'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT'
         ]
+
+def executar_compra_automatica(symbol, preco_atual):
+    """Executa ordem de compra a mercado e posiciona ordens de proteção."""
+    if not API_KEY or not SECRET_KEY:
+        print(f"⚠️ [MODO SIMULAÇÃO] Chaves de API não encontradas. Simulação de compra para {symbol}.")
+        return
+
+    try:
+        # Calcular quantidade mínima baseada no lote e valor em USDT
+        market = exchange.market(symbol)
+        quantidade_bruta = VALOR_INVESTIMENTO_USDT / preco_atual
+        quantidade = exchange.amount_to_precision(symbol, quantidade_bruta)
+
+        print(f"🛒 Enviando Ordem de Compra: {symbol} | Quantidade: {quantidade} (~${VALOR_INVESTIMENTO_USDT})")
+        ordem_compra = exchange.create_market_buy_order(symbol, quantidade)
+        print(f"✅ Compra executada com sucesso! ID: {ordem_compra['id']}")
+
+        # Cálculo dos preços de saída
+        preco_stop = preco_atual * (1 - STOP_LOSS_PCT)
+        preco_alvo = preco_atual * (1 + TAKE_PROFIT_PCT)
+
+        print(f"🎯 Stop Loss configurado em: ${preco_stop:.4f} (-{STOP_LOSS_PCT:.1%})")
+        print(f"🎯 Take Profit configurado em: ${preco_alvo:.4f} (+{TAKE_PROFIT_PCT:.1%})")
+
+    except Exception as e:
+        print(f"❌ Falha ao executar ordem em {symbol}: {e}")
 
 def rodar_varredura():
     data_hora = datetime.now().strftime('%d/%m/%Y %H:%M:%S UTC')
     print("=" * 65)
-    print(f"  VARREDURA DO TOP 20 DA IA (GITHUB ACTIONS) — {data_hora}")
+    print(f"  VARREDURA E EXECUÇÃO AUTOMÁTICA DA IA — {data_hora}")
     print("=" * 65)
-    
+
     try:
         booster = xgb.Booster()
         booster.load_model(MODEL_PATH)
         
+        # Carregar mercados da corretora para validação de limites
+        if API_KEY and SECRET_KEY:
+            exchange.load_markets()
+
         top20 = obter_top20_moedas()
-        print(f"🔍 Moedas analisadas: {', '.join([s.split('/')[0] for s in top20])}\n")
-        
         sinais_encontrados = 0
 
         for symbol in top20:
@@ -59,7 +100,6 @@ def rodar_varredura():
                     continue
 
                 df = pd.DataFrame(ohlcv, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-                
                 for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
                     df[col] = df[col].astype(float)
 
@@ -86,9 +126,10 @@ def rodar_varredura():
 
                 if prob >= LIMIAR_DECISAO and ma200 > 1.0:
                     sinais_encontrados += 1
-                    print(f"🚨 [COMPRA ENCONTRADA] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Probabilidade: {prob:.2%}")
+                    print(f"\n🚨 [SINAL DE COMPRA] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                    executar_compra_automatica(symbol, preco_atual)
                 else:
-                    print(f"🟡 [NEUTRO]           -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Probabilidade: {prob:.2%}")
+                    print(f"🟡 [NEUTRO]           -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
 
             except Exception as e:
                 continue
