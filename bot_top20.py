@@ -23,8 +23,14 @@ exchange = ccxt.binance({
     'apiKey': API_KEY,
     'secret': SECRET_KEY,
     'enableRateLimit': True,
-    'options': {'defaultType': 'spot'}  # Mercado à vista (Spot)
+    'options': {
+        'defaultType': 'spot',
+        'adjustForTimeDifference': True
+    }
 })
+
+# Redireciona as chamadas públicas para evitar o bloqueio de IP (HTTP 451) no GitHub Actions
+exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
 
 TIMEFRAME = '1h'
 LIMIAR_DECISAO = 0.70
@@ -88,7 +94,10 @@ def rodar_varredura():
         
         # Carregar mercados da corretora para validação de limites
         if API_KEY and SECRET_KEY:
-            exchange.load_markets()
+            try:
+                exchange.load_markets()
+            except Exception as e:
+                print(f"⚠️ Aviso ao carregar mercados autenticados: {e}")
 
         top20 = obter_top20_moedas()
         sinais_encontrados = 0
