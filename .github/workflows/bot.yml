@@ -2,8 +2,9 @@ name: Executar Bot Crypto IA
 
 on:
   schedule:
-    - cron: '5 * * * *'
-  workflow_dispatch:
+    # Roda a cada 20 minutos (nos minutos 0, 20 e 40 de cada hora)
+    - cron: '0,20,40 * * * *'
+  workflow_dispatch: # Permite rodar manualmente a qualquer momento
 
 jobs:
   executar-bot:
