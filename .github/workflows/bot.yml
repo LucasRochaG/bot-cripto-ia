@@ -2,9 +2,12 @@ name: Executar Bot Crypto IA
 
 on:
   schedule:
-    # Roda a cada 20 minutos (nos minutos 0, 20 e 40 de cada hora)
+    # Roda a cada 20 minutos
     - cron: '0,20,40 * * * *'
-  workflow_dispatch: # Permite rodar manualmente a qualquer momento
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   executar-bot:
@@ -30,3 +33,11 @@ jobs:
           BINANCE_SECRET_KEY: ${{ secrets.BINANCE_SECRET_KEY }}
         run: |
           python bot_top20.py
+
+      - name: Salvar Histórico no Repositório
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add historico_sinais.csv || true
+          git commit -m "update: historico de sinais salvo pela IA" || true
+          git push || true
