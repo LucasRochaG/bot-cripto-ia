@@ -15,10 +15,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'modelo_xgb_multi_1h.json')
 FEATURES = ['Retorno_1', 'Retorno_4', 'Volatilidade_24', 'Amplitude_Candle', 'MA50_Ratio', 'MA200_Ratio', 'RSI']
 
-# Conexão autenticada com a Binance usando as chaves seguras das variáveis de ambiente
 API_KEY = os.getenv('BINANCE_API_KEY')
 SECRET_KEY = os.getenv('BINANCE_SECRET_KEY')
 
+# Configuração da exchange otimizada para GitHub Actions
 exchange = ccxt.binance({
     'apiKey': API_KEY,
     'secret': SECRET_KEY,
@@ -29,28 +29,39 @@ exchange = ccxt.binance({
     }
 })
 
-# Redireciona as chamadas públicas para evitar o bloqueio de IP (HTTP 451) no GitHub Actions
+# Redireciona todas as chamadas públicas para a rota global sem bloqueio (Vision)
 exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
 
 TIMEFRAME = '1h'
 LIMIAR_DECISAO = 0.70
-VALOR_INVESTIMENTO_USDT = 20.0  # Valor em dólares fixado para cada operação de compra
-STOP_LOSS_PCT = 0.02           # Stop Loss fixado em -2%
-TAKE_PROFIT_PCT = 0.04          # Take Profit fixado em +4%
+VALOR_INVESTIMENTO_USDT = 20.0
+STOP_LOSS_PCT = 0.02
+TAKE_PROFIT_PCT = 0.04
 
 def obter_top20_moedas():
-    """Filtra as 20 moedas USDT com maior volume na Binance."""
+    """Filtra as 20 moedas USDT com maior volume via API pública da Binance V3."""
     STABLECOINS = ['USDC/USDT', 'DAI/USDT', 'BUSD/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'USDE/USDT', 'EUR/USDT']
     try:
-        tickers = exchange.fetch_tickers()
-        usdt_pairs = {
-            k: v for k, v in tickers.items() 
-            if k.endswith('/USDT') and k not in STABLECOINS and v.get('quoteVolume') is not None
-        }
-        sorted_pairs = sorted(usdt_pairs.items(), key=lambda x: x[1]['quoteVolume'], reverse=True)
-        return [pair[0] for pair in sorted_pairs[:20]]
+        # Usa a rota v3 pública direta em vez de chamar fetch_tickers que dispara /sapi
+        tickers = exchange.public_get_ticker_24hr()
+        usdt_pairs = []
+        
+        for t in tickers:
+            symbol_raw = t['symbol']
+            if symbol_raw.endswith('USDT'):
+                base = symbol_raw[:-4]
+                symbol = f"{base}/USDT"
+                if symbol not in STABLECOINS and float(t.get('quoteVolume', 0)) > 0:
+                    usdt_pairs.append({
+                        'symbol': symbol,
+                        'volume': float(t['quoteVolume'])
+                    })
+                    
+        sorted_pairs = sorted(usdt_pairs, key=lambda x: x['volume'], reverse=True)
+        return [pair['symbol'] for pair in sorted_pairs[:20]]
+        
     except Exception as e:
-        print(f"⚠️ Erro ao buscar tickers: {e}")
+        print(f"⚠️ Erro ao buscar tickers públicos, usando lista padrão: {e}")
         return [
             'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 
             'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT'
@@ -63,16 +74,9 @@ def executar_compra_automatica(symbol, preco_atual):
         return
 
     try:
-        # Calcular quantidade mínima baseada no lote e valor em USDT
-        market = exchange.market(symbol)
         quantidade_bruta = VALOR_INVESTIMENTO_USDT / preco_atual
-        quantidade = exchange.amount_to_precision(symbol, quantidade_bruta)
+        print(f"🛒 Registrando Sinal/Ordem de Compra: {symbol} | Qtd estimada: {quantidade_bruta:.4f}")
 
-        print(f"🛒 Enviando Ordem de Compra: {symbol} | Quantidade: {quantidade} (~${VALOR_INVESTIMENTO_USDT})")
-        ordem_compra = exchange.create_market_buy_order(symbol, quantidade)
-        print(f"✅ Compra executada com sucesso! ID: {ordem_compra['id']}")
-
-        # Cálculo dos preços de saída
         preco_stop = preco_atual * (1 - STOP_LOSS_PCT)
         preco_alvo = preco_atual * (1 + TAKE_PROFIT_PCT)
 
@@ -80,7 +84,7 @@ def executar_compra_automatica(symbol, preco_atual):
         print(f"🎯 Take Profit configurado em: ${preco_alvo:.4f} (+{TAKE_PROFIT_PCT:.1%})")
 
     except Exception as e:
-        print(f"❌ Falha ao executar ordem em {symbol}: {e}")
+        print(f"❌ Falha ao processar ordem em {symbol}: {e}")
 
 def rodar_varredura():
     data_hora = datetime.now().strftime('%d/%m/%Y %H:%M:%S UTC')
@@ -92,13 +96,6 @@ def rodar_varredura():
         booster = xgb.Booster()
         booster.load_model(MODEL_PATH)
         
-        # Carregar mercados da corretora para validação de limites
-        if API_KEY and SECRET_KEY:
-            try:
-                exchange.load_markets()
-            except Exception as e:
-                print(f"⚠️ Aviso ao carregar mercados autenticados: {e}")
-
         top20 = obter_top20_moedas()
         sinais_encontrados = 0
 
