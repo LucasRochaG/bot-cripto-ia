@@ -5,6 +5,7 @@ import xgboost as xgb
 import warnings
 import os
 import csv
+import requests
 from datetime import datetime
 
 warnings.filterwarnings('ignore')
@@ -131,8 +132,6 @@ def registrar_nova_posicao(data_hora, symbol, preco, prob):
 # ==========================================
 # FILTROS DE MERCADO E DADOS
 # ==========================================
-import requests  # Certifique-se que requests está disponível ou adicione nos imports
-
 def verificar_tendencia_btc():
     """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta) via requisição direta."""
     try:
@@ -144,7 +143,6 @@ def verificar_tendencia_btc():
             print("⚠️ Resposta inválida da API da Binance para o BTC. Prosseguindo por padrão...")
             return True
 
-        # O formato do kline da Binance é: [timestamp, open, high, low, close, volume, ...]
         df_btc = pd.DataFrame(data, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QuoteAssetVolume', 'NumberOfTrades', 'TakerBuyBaseAssetVolume', 'TakerBuyQuoteAssetVolume', 'Ignore'])
         df_btc['Close'] = df_btc['Close'].astype(float)
         df_btc['MA200'] = df_btc['Close'].rolling(200).mean()
@@ -159,6 +157,33 @@ def verificar_tendencia_btc():
     except Exception as e:
         print(f"⚠️ Falha ao checar tendência do BTC via requests: {e}. Prosseguindo por padrão...")
         return True
+
+def obter_top20_moedas():
+    """Filtra as 20 moedas USDT com maior volume na Binance."""
+    STABLECOINS = ['USDC/USDT', 'DAI/USDT', 'BUSD/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'USDE/USDT', 'EUR/USDT']
+    try:
+        exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
+        tickers = exchange.public_get_ticker_24hr()
+        usdt_pairs = []
+        
+        for t in tickers:
+            symbol_raw = t['symbol']
+            if symbol_raw.endswith('USDT'):
+                base = symbol_raw[:-4]
+                symbol = f"{base}/USDT"
+                if symbol not in STABLECOINS and float(t.get('quoteVolume', 0)) > 0:
+                    usdt_pairs.append({
+                        'symbol': symbol,
+                        'volume': float(t['quoteVolume'])
+                    })
+                    
+        sorted_pairs = sorted(usdt_pairs, key=lambda x: x['volume'], reverse=True)
+        return [pair['symbol'] for pair in sorted_pairs[:20]]
+        
+    except Exception as e:
+        print(f"⚠️ Erro ao buscar tickers públicos, usando lista padrão: {e}")
+        return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT']
+
 # ==========================================
 # EXECUÇÃO PRINCIPAL DO BOT
 # ==========================================
