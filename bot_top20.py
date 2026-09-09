@@ -134,7 +134,10 @@ def registrar_nova_posicao(data_hora, symbol, preco, prob):
 def verificar_tendencia_btc():
     """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta)."""
     try:
+        # Garante o uso do endpoint público otimizado
+        exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
         ohlcv_btc = exchange.fetch_ohlcv('BTC/USDT', timeframe=TIMEFRAME, limit=250)
+        
         df_btc = pd.DataFrame(ohlcv_btc, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df_btc['Close'] = df_btc['Close'].astype(float)
         df_btc['MA200'] = df_btc['Close'].rolling(200).mean()
@@ -154,6 +157,7 @@ def obter_top20_moedas():
     """Filtra as 20 moedas USDT com maior volume na Binance."""
     STABLECOINS = ['USDC/USDT', 'DAI/USDT', 'BUSD/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'USDE/USDT', 'EUR/USDT']
     try:
+        exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
         tickers = exchange.public_get_ticker_24hr()
         usdt_pairs = []
         
@@ -198,6 +202,7 @@ def rodar_varredura():
 
         for symbol in top20:
             try:
+                exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
                 ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=250)
                 if not ohlcv or len(ohlcv) < 200:
                     continue
