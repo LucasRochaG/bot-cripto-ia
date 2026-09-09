@@ -131,21 +131,21 @@ def registrar_nova_posicao(data_hora, symbol, preco, prob):
 # ==========================================
 # FILTROS DE MERCADO E DADOS
 # ==========================================
+import requests  # Certifique-se que requests está disponível ou adicione nos imports
+
 def verificar_tendencia_btc():
-    """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta)."""
+    """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta) via requisição direta."""
     try:
-        exchange_publica = ccxt.binance({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': 'spot',
-                'fetchMarkets': False  # Evita carregar mercados restritos de futuros/sapi
-            }
-        })
-        exchange_publica.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
+        url = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=250"
+        response = requests.get(url, timeout=10)
+        data = response.json()
         
-        ohlcv_btc = exchange_publica.fetch_ohlcv('BTC/USDT', timeframe=TIMEFRAME, limit=250)
-        
-        df_btc = pd.DataFrame(ohlcv_btc, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        if not isinstance(data, list):
+            print("⚠️ Resposta inválida da API da Binance para o BTC. Prosseguindo por padrão...")
+            return True
+
+        # O formato do kline da Binance é: [timestamp, open, high, low, close, volume, ...]
+        df_btc = pd.DataFrame(data, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QuoteAssetVolume', 'NumberOfTrades', 'TakerBuyBaseAssetVolume', 'TakerBuyQuoteAssetVolume', 'Ignore'])
         df_btc['Close'] = df_btc['Close'].astype(float)
         df_btc['MA200'] = df_btc['Close'].rolling(200).mean()
         
@@ -157,7 +157,7 @@ def verificar_tendencia_btc():
         print(f"📊 Filtro Macro BTC/USDT: Preço ${ultimo_fechamento:.2f} | MM200 ${ma200:.2f} -> {status_txt}")
         return em_alta
     except Exception as e:
-        print(f"⚠️ Falha ao checar tendência do BTC: {e}. Prosseguindo por padrão...")
+        print(f"⚠️ Falha ao checar tendência do BTC via requests: {e}. Prosseguindo por padrão...")
         return True
 # ==========================================
 # EXECUÇÃO PRINCIPAL DO BOT
