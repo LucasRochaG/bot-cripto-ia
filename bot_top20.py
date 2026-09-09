@@ -134,9 +134,14 @@ def registrar_nova_posicao(data_hora, symbol, preco, prob):
 def verificar_tendencia_btc():
     """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta)."""
     try:
-        # Garante o uso do endpoint público otimizado
-        exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
-        ohlcv_btc = exchange.fetch_ohlcv('BTC/USDT', timeframe=TIMEFRAME, limit=250)
+        # Instancia uma conexão 100% pública e isolada, sem usar credenciais da conta
+        exchange_publica = ccxt.binance({
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
+        exchange_publica.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
+        
+        ohlcv_btc = exchange_publica.fetch_ohlcv('BTC/USDT', timeframe=TIMEFRAME, limit=250)
         
         df_btc = pd.DataFrame(ohlcv_btc, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df_btc['Close'] = df_btc['Close'].astype(float)
