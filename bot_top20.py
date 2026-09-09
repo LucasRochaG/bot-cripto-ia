@@ -203,6 +203,7 @@ def rodar_varredura():
         booster.load_model(MODEL_PATH)
         
         top20 = obter_top20_moedas()
+        print(f"\n🔎 Analisando o Top {len(top20)} ativos do mercado...")
         sinais_encontrados = 0
 
         for symbol in top20:
@@ -240,18 +241,19 @@ def rodar_varredura():
                 if prob >= LIMIAR_DECISAO and ma200 > 1.0:
                     sinais_encontrados += 1
                     if btc_favoravel:
-                        print(f"\n🚨 [SINAL DE COMPRA REGISTRADO] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                        print(f"🚨 [SINAL DE COMPRA] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
                         registrar_nova_posicao(data_hora, symbol, preco_atual, prob)
                     else:
-                        print(f"\n⚠️ [SINAL IGNORADO POR FILTRO BTC] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                        print(f"⚠️ [IGNORADO/FILTRO BTC] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
                 else:
-                    print(f"🟡 [NEUTRO]                    -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                    print(f"🟡 [NEUTRO]           -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
 
             except Exception as e:
+                print(f"⚠️ Erro ao processar {symbol}: {e}")
                 continue
 
         if sinais_encontrados == 0:
-            print("\nNenhum sinal de compra identificado nesta varredura.")
+            print("\n🏁 Varredura concluída: Nenhum ativo atingiu o limiar de alta necessário nesta rodada.")
 
     except Exception as e:
         print(f"❌ Erro na execução principal: {e}")
