@@ -4,6 +4,7 @@ import numpy as np
 import xgboost as xgb
 import warnings
 import os
+import csv
 from datetime import datetime
 
 warnings.filterwarnings('ignore')
@@ -13,6 +14,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'modelo_xgb_multi_1h.json')
+CSV_PATH = os.path.join(BASE_DIR, 'historico_sinais.csv')
 FEATURES = ['Retorno_1', 'Retorno_4', 'Volatilidade_24', 'Amplitude_Candle', 'MA50_Ratio', 'MA200_Ratio', 'RSI']
 
 API_KEY = os.getenv('BINANCE_API_KEY')
@@ -29,7 +31,7 @@ exchange = ccxt.binance({
     }
 })
 
-# Redireciona todas as chamadas públicas para a rota global sem bloqueio (Vision)
+# Redireciona chamadas públicas para evitar bloqueio 451
 exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
 
 TIMEFRAME = '1h'
@@ -38,11 +40,34 @@ VALOR_INVESTIMENTO_USDT = 20.0
 STOP_LOSS_PCT = 0.02
 TAKE_PROFIT_PCT = 0.04
 
+def inicializar_csv():
+    """Garante que o arquivo historico_sinais.csv existe com o cabeçalho."""
+    if not os.path.exists(CSV_PATH):
+        with open(CSV_PATH, mode='w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                'timestamp_utc', 'symbol', 'preco_entrada', 'probabilidade', 
+                'tipo_sinal', 'stop_loss_pct', 'stop_loss_preco', 
+                'take_profit_pct', 'take_profit_preco'
+            ])
+
+def salvar_sinal_csv(data_hora, symbol, preco, prob, tipo):
+    """Registra uma entrada no histórico CSV."""
+    preco_stop = preco * (1 - STOP_LOSS_PCT)
+    preco_alvo = preco * (1 + TAKE_PROFIT_PCT)
+    
+    with open(CSV_PATH, mode='a', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow([
+            data_hora, symbol, f"{preco:.4f}", f"{prob:.4f}", 
+            tipo, f"-{STOP_LOSS_PCT:.1%}", f"{preco_stop:.4f}", 
+            f"+{TAKE_PROFIT_PCT:.1%}", f"{preco_alvo:.4f}"
+        ])
+
 def obter_top20_moedas():
     """Filtra as 20 moedas USDT com maior volume via API pública da Binance V3."""
     STABLECOINS = ['USDC/USDT', 'DAI/USDT', 'BUSD/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'USDE/USDT', 'EUR/USDT']
     try:
-        # Usa a rota v3 pública direta em vez de chamar fetch_tickers que dispara /sapi
         tickers = exchange.public_get_ticker_24hr()
         usdt_pairs = []
         
@@ -68,29 +93,21 @@ def obter_top20_moedas():
         ]
 
 def executar_compra_automatica(symbol, preco_atual):
-    """Executa ordem de compra a mercado e posiciona ordens de proteção."""
-    if not API_KEY or not SECRET_KEY:
-        print(f"⚠️ [MODO SIMULAÇÃO] Chaves de API não encontradas. Simulação de compra para {symbol}.")
-        return
+    """Simula/Executa ordem de compra a mercado e exibe alvos de proteção."""
+    preco_stop = preco_atual * (1 - STOP_LOSS_PCT)
+    preco_alvo = preco_atual * (1 + TAKE_PROFIT_PCT)
 
-    try:
-        quantidade_bruta = VALOR_INVESTIMENTO_USDT / preco_atual
-        print(f"🛒 Registrando Sinal/Ordem de Compra: {symbol} | Qtd estimada: {quantidade_bruta:.4f}")
-
-        preco_stop = preco_atual * (1 - STOP_LOSS_PCT)
-        preco_alvo = preco_atual * (1 + TAKE_PROFIT_PCT)
-
-        print(f"🎯 Stop Loss configurado em: ${preco_stop:.4f} (-{STOP_LOSS_PCT:.1%})")
-        print(f"🎯 Take Profit configurado em: ${preco_alvo:.4f} (+{TAKE_PROFIT_PCT:.1%})")
-
-    except Exception as e:
-        print(f"❌ Falha ao processar ordem em {symbol}: {e}")
+    print(f"🛒 Registrando Sinal de Compra: {symbol} | Preço: ${preco_atual:.4f}")
+    print(f"🎯 Stop Loss configurado em: ${preco_stop:.4f} (-{STOP_LOSS_PCT:.1%})")
+    print(f"🎯 Take Profit configurado em: ${preco_alvo:.4f} (+{TAKE_PROFIT_PCT:.1%})")
 
 def rodar_varredura():
-    data_hora = datetime.now().strftime('%d/%m/%Y %H:%M:%S UTC')
+    data_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
     print("=" * 65)
     print(f"  VARREDURA E EXECUÇÃO AUTOMÁTICA DA IA — {data_hora}")
     print("=" * 65)
+
+    inicializar_csv()
 
     try:
         booster = xgb.Booster()
@@ -133,6 +150,7 @@ def rodar_varredura():
                 if prob >= LIMIAR_DECISAO and ma200 > 1.0:
                     sinais_encontrados += 1
                     print(f"\n🚨 [SINAL DE COMPRA] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                    salvar_sinal_csv(data_hora, symbol, preco_atual, prob, 'COMPRA')
                     executar_compra_automatica(symbol, preco_atual)
                 else:
                     print(f"🟡 [NEUTRO]           -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
