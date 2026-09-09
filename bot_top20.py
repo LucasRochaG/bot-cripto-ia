@@ -20,7 +20,7 @@ FEATURES = ['Retorno_1', 'Retorno_4', 'Volatilidade_24', 'Amplitude_Candle', 'MA
 API_KEY = os.getenv('BINANCE_API_KEY')
 SECRET_KEY = os.getenv('BINANCE_SECRET_KEY')
 
-# Configuração da exchange otimizada para GitHub Actions
+# Configuração da exchange otimizada para conexões públicas (sem bloqueio 451)
 exchange = ccxt.binance({
     'apiKey': API_KEY,
     'secret': SECRET_KEY,
@@ -31,7 +31,6 @@ exchange = ccxt.binance({
     }
 })
 
-# Redireciona chamadas públicas para evitar bloqueio 451
 exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
 
 TIMEFRAME = '1h'
@@ -40,32 +39,119 @@ VALOR_INVESTIMENTO_USDT = 20.0
 STOP_LOSS_PCT = 0.02
 TAKE_PROFIT_PCT = 0.04
 
+CSV_HEADERS = [
+    'id', 'timestamp_abertura', 'symbol', 'preco_entrada', 'probabilidade', 
+    'stop_loss_preco', 'take_profit_preco', 'status', 
+    'timestamp_fechamento', 'preco_saida', 'pnl_pct', 'pnl_usdt'
+]
+
+# ==========================================
+# GESTÃO DE HISTÓRICO E POSIÇÕES (CSV)
+# ==========================================
 def inicializar_csv():
-    """Garante que o arquivo historico_sinais.csv existe com o cabeçalho."""
+    """Cria o arquivo CSV de histórico com cabeçalho completo se não existir."""
     if not os.path.exists(CSV_PATH):
         with open(CSV_PATH, mode='w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
-            writer.writerow([
-                'timestamp_utc', 'symbol', 'preco_entrada', 'probabilidade', 
-                'tipo_sinal', 'stop_loss_pct', 'stop_loss_preco', 
-                'take_profit_pct', 'take_profit_preco'
-            ])
+            writer.writerow(CSV_HEADERS)
 
-def salvar_sinal_csv(data_hora, symbol, preco, prob, tipo):
-    """Registra uma entrada no histórico CSV."""
+def auditar_posicoes_abertas():
+    """Verifica sinais em aberto e encerra caso tenham atingido Stop Loss ou Take Profit."""
+    if not os.path.exists(CSV_PATH):
+        return
+
+    df_historico = pd.read_csv(CSV_PATH)
+    if df_historico.empty or 'status' not in df_historico.columns:
+        return
+
+    posicoes_abertas = df_historico[df_historico['status'] == 'ABERTO']
+    if posicoes_abertas.empty:
+        return
+
+    print("\n🔍 AUDITANDO POSIÇÕES EM ABERTO NO HISTÓRICO...")
+    atualizou = False
+
+    for idx, row in posicoes_abertas.iterrows():
+        symbol = row['symbol']
+        preco_entrada = float(row['preco_entrada'])
+        stop_loss = float(row['stop_loss_preco'])
+        take_profit = float(row['take_profit_preco'])
+
+        try:
+            ticker = exchange.fetch_ticker(symbol)
+            preco_atual = float(ticker['last'])
+            
+            status_novo = None
+            preco_saida = None
+
+            if preco_atual >= take_profit:
+                status_novo = 'TAKE_PROFIT'
+                preco_saida = take_profit
+            elif preco_atual <= stop_loss:
+                status_novo = 'STOP_LOSS'
+                preco_saida = stop_loss
+
+            if status_novo:
+                data_fechamento = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+                pnl_pct = ((preco_saida - preco_entrada) / preco_entrada) * 100
+                pnl_usdt = (pnl_pct / 100) * VALOR_INVESTIMENTO_USDT
+
+                df_historico.loc[idx, 'status'] = status_novo
+                df_historico.loc[idx, 'timestamp_fechamento'] = data_fechamento
+                df_historico.loc[idx, 'preco_saida'] = f"{preco_saida:.4f}"
+                df_historico.loc[idx, 'pnl_pct'] = f"{pnl_pct:.2f}%"
+                df_historico.loc[idx, 'pnl_usdt'] = f"{pnl_usdt:.2f}"
+                atualizou = True
+
+                emoji = "🎯" if status_novo == 'TAKE_PROFIT' else "🛑"
+                print(f"{emoji} POSIÇÃO ENCERRADA: {symbol} | Resultado: {status_novo} ({pnl_pct:+.2f}%) | Preço de Saída: ${preco_saida:.4f}")
+
+        except Exception as e:
+            print(f"⚠️ Não foi possível verificar cotação atual para {symbol}: {e}")
+
+    if atualizou:
+        df_historico.to_csv(CSV_PATH, index=False)
+
+def registrar_nova_posicao(data_hora, symbol, preco, prob):
+    """Registra uma nova posição de compra no CSV."""
     preco_stop = preco * (1 - STOP_LOSS_PCT)
     preco_alvo = preco * (1 + TAKE_PROFIT_PCT)
-    
+    posicao_id = f"{symbol.split('/')[0]}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    nova_linha = [
+        posicao_id, data_hora, symbol, f"{preco:.4f}", f"{prob:.4f}",
+        f"{preco_stop:.4f}", f"{preco_alvo:.4f}", 'ABERTO',
+        '', '', '', ''
+    ]
+
     with open(CSV_PATH, mode='a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-        writer.writerow([
-            data_hora, symbol, f"{preco:.4f}", f"{prob:.4f}", 
-            tipo, f"-{STOP_LOSS_PCT:.1%}", f"{preco_stop:.4f}", 
-            f"+{TAKE_PROFIT_PCT:.1%}", f"{preco_alvo:.4f}"
-        ])
+        writer.writerow(nova_linha)
+
+# ==========================================
+# FILTROS DE MERCADO E DADOS
+# ==========================================
+def verificar_tendencia_btc():
+    """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta)."""
+    try:
+        ohlcv_btc = exchange.fetch_ohlcv('BTC/USDT', timeframe=TIMEFRAME, limit=250)
+        df_btc = pd.DataFrame(ohlcv_btc, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        df_btc['Close'] = df_btc['Close'].astype(float)
+        df_btc['MA200'] = df_btc['Close'].rolling(200).mean()
+        
+        ultimo_fechamento = float(df_btc.iloc[-2]['Close'])
+        ma200 = float(df_btc.iloc[-2]['MA200'])
+
+        em_alta = ultimo_fechamento > ma200
+        status_txt = "TENDÊNCIA DE ALTA 🟢" if em_alta else "TENDÊNCIA DE BAIXA 🔴 (Entradas Bloqueadas)"
+        print(f"📊 Filtro Macro BTC/USDT: Preço ${ultimo_fechamento:.2f} | MM200 ${ma200:.2f} -> {status_txt}")
+        return em_alta
+    except Exception as e:
+        print(f"⚠️ Falha ao checar tendência do BTC: {e}. Prosseguindo por padrão...")
+        return True
 
 def obter_top20_moedas():
-    """Filtra as 20 moedas USDT com maior volume via API pública da Binance V3."""
+    """Filtra as 20 moedas USDT com maior volume na Binance."""
     STABLECOINS = ['USDC/USDT', 'DAI/USDT', 'BUSD/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'USDE/USDT', 'EUR/USDT']
     try:
         tickers = exchange.public_get_ticker_24hr()
@@ -87,20 +173,11 @@ def obter_top20_moedas():
         
     except Exception as e:
         print(f"⚠️ Erro ao buscar tickers públicos, usando lista padrão: {e}")
-        return [
-            'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 
-            'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT'
-        ]
+        return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT']
 
-def executar_compra_automatica(symbol, preco_atual):
-    """Simula/Executa ordem de compra a mercado e exibe alvos de proteção."""
-    preco_stop = preco_atual * (1 - STOP_LOSS_PCT)
-    preco_alvo = preco_atual * (1 + TAKE_PROFIT_PCT)
-
-    print(f"🛒 Registrando Sinal de Compra: {symbol} | Preço: ${preco_atual:.4f}")
-    print(f"🎯 Stop Loss configurado em: ${preco_stop:.4f} (-{STOP_LOSS_PCT:.1%})")
-    print(f"🎯 Take Profit configurado em: ${preco_alvo:.4f} (+{TAKE_PROFIT_PCT:.1%})")
-
+# ==========================================
+# EXECUÇÃO PRINCIPAL DO BOT
+# ==========================================
 def rodar_varredura():
     data_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
     print("=" * 65)
@@ -108,6 +185,9 @@ def rodar_varredura():
     print("=" * 65)
 
     inicializar_csv()
+    auditar_posicoes_abertas()
+
+    btc_favoravel = verificar_tendencia_btc()
 
     try:
         booster = xgb.Booster()
@@ -149,17 +229,19 @@ def rodar_varredura():
 
                 if prob >= LIMIAR_DECISAO and ma200 > 1.0:
                     sinais_encontrados += 1
-                    print(f"\n🚨 [SINAL DE COMPRA] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
-                    salvar_sinal_csv(data_hora, symbol, preco_atual, prob, 'COMPRA')
-                    executar_compra_automatica(symbol, preco_atual)
+                    if btc_favoravel:
+                        print(f"\n🚨 [SINAL DE COMPRA REGISTRADO] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                        registrar_nova_posicao(data_hora, symbol, preco_atual, prob)
+                    else:
+                        print(f"\n⚠️ [SINAL IGNORADO POR FILTRO BTC] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
                 else:
-                    print(f"🟡 [NEUTRO]           -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                    print(f"🟡 [NEUTRO]                    -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
 
             except Exception as e:
                 continue
 
         if sinais_encontrados == 0:
-            print("\nNenhum sinal de compra identificado nesta hora.")
+            print("\nNenhum sinal de compra identificado nesta varredura.")
 
     except Exception as e:
         print(f"❌ Erro na execução principal: {e}")
