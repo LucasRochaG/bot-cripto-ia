@@ -21,17 +21,13 @@ FEATURES = ['Retorno_1', 'Retorno_4', 'Volatilidade_24', 'Amplitude_Candle', 'MA
 API_KEY = os.getenv('BINANCE_API_KEY')
 SECRET_KEY = os.getenv('BINANCE_SECRET_KEY')
 
-# Configuração da exchange otimizada para conexões públicas (sem bloqueio 451)
+# Instância CCXT apenas para tickers de volume (rotas públicas spot)
 exchange = ccxt.binance({
     'apiKey': API_KEY,
     'secret': SECRET_KEY,
     'enableRateLimit': True,
-    'options': {
-        'defaultType': 'spot',
-        'adjustForTimeDifference': True
-    }
+    'options': {'defaultType': 'spot', 'adjustForTimeDifference': True}
 })
-
 exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
 
 TIMEFRAME = '1h'
@@ -50,14 +46,12 @@ CSV_HEADERS = [
 # GESTÃO DE HISTÓRICO E POSIÇÕES (CSV)
 # ==========================================
 def inicializar_csv():
-    """Cria o arquivo CSV de histórico com cabeçalho completo se não existir."""
     if not os.path.exists(CSV_PATH):
         with open(CSV_PATH, mode='w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             writer.writerow(CSV_HEADERS)
 
 def auditar_posicoes_abertas():
-    """Verifica sinais em aberto e encerra caso tenham atingido Stop Loss ou Take Profit."""
     if not os.path.exists(CSV_PATH):
         return
 
@@ -79,8 +73,10 @@ def auditar_posicoes_abertas():
         take_profit = float(row['take_profit_preco'])
 
         try:
-            ticker = exchange.fetch_ticker(symbol)
-            preco_atual = float(ticker['last'])
+            # Requisição direta para cotação atual (evita erro 451)
+            pair_slug = symbol.replace('/', '')
+            r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={pair_slug}", timeout=10)
+            preco_atual = float(r.json()['price'])
             
             status_novo = None
             preco_saida = None
@@ -114,7 +110,6 @@ def auditar_posicoes_abertas():
         df_historico.to_csv(CSV_PATH, index=False)
 
 def registrar_nova_posicao(data_hora, symbol, preco, prob):
-    """Registra uma nova posição de compra no CSV."""
     preco_stop = preco * (1 - STOP_LOSS_PCT)
     preco_alvo = preco * (1 + TAKE_PROFIT_PCT)
     posicao_id = f"{symbol.split('/')[0]}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -133,14 +128,12 @@ def registrar_nova_posicao(data_hora, symbol, preco, prob):
 # FILTROS DE MERCADO E DADOS
 # ==========================================
 def verificar_tendencia_btc():
-    """Filtro Macro: Retorna True se o Bitcoin estiver acima da MM200 (Tendência de Alta) via requisição direta."""
     try:
         url = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=250"
         response = requests.get(url, timeout=10)
         data = response.json()
         
         if not isinstance(data, list):
-            print("⚠️ Resposta inválida da API da Binance para o BTC. Prosseguindo por padrão...")
             return True
 
         df_btc = pd.DataFrame(data, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QuoteAssetVolume', 'NumberOfTrades', 'TakerBuyBaseAssetVolume', 'TakerBuyQuoteAssetVolume', 'Ignore'])
@@ -155,15 +148,14 @@ def verificar_tendencia_btc():
         print(f"📊 Filtro Macro BTC/USDT: Preço ${ultimo_fechamento:.2f} | MM200 ${ma200:.2f} -> {status_txt}")
         return em_alta
     except Exception as e:
-        print(f"⚠️ Falha ao checar tendência do BTC via requests: {e}. Prosseguindo por padrão...")
+        print(f"⚠️ Falha ao checar tendência do BTC: {e}. Prosseguindo por padrão...")
         return True
 
 def obter_top20_moedas():
-    """Filtra as 20 moedas USDT com maior volume na Binance."""
     STABLECOINS = ['USDC/USDT', 'DAI/USDT', 'BUSD/USDT', 'TUSD/USDT', 'FDUSD/USDT', 'USDE/USDT', 'EUR/USDT']
     try:
-        exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
-        tickers = exchange.public_get_ticker_24hr()
+        r = requests.get("https://data-api.binance.vision/api/v3/ticker/24hr", timeout=10)
+        tickers = r.json()
         usdt_pairs = []
         
         for t in tickers:
@@ -179,9 +171,8 @@ def obter_top20_moedas():
                     
         sorted_pairs = sorted(usdt_pairs, key=lambda x: x['volume'], reverse=True)
         return [pair['symbol'] for pair in sorted_pairs[:20]]
-        
     except Exception as e:
-        print(f"⚠️ Erro ao buscar tickers públicos, usando lista padrão: {e}")
+        print(f"⚠️ Erro ao buscar tickers: {e}")
         return ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'LTC/USDT']
 
 # ==========================================
@@ -208,12 +199,15 @@ def rodar_varredura():
 
         for symbol in top20:
             try:
-                exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=250)
-                if not ohlcv or len(ohlcv) < 200:
+                pair_slug = symbol.replace('/', '')
+                url = f"https://data-api.binance.vision/api/v3/klines?symbol={pair_slug}&interval={TIMEFRAME}&limit=250"
+                response = requests.get(url, timeout=10)
+                ohlcv = response.json()
+
+                if not isinstance(ohlcv, list) or len(ohlcv) < 200:
                     continue
 
-                df = pd.DataFrame(ohlcv, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                df = pd.DataFrame(ohlcv, columns=['Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QuoteAssetVolume', 'NumberOfTrades', 'TakerBuyBaseAssetVolume', 'TakerBuyQuoteAssetVolume', 'Ignore'])
                 for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
                     df[col] = df[col].astype(float)
 
