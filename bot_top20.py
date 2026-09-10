@@ -21,7 +21,6 @@ FEATURES = ['Retorno_1', 'Retorno_4', 'Volatilidade_24', 'Amplitude_Candle', 'MA
 API_KEY = os.getenv('BINANCE_API_KEY')
 SECRET_KEY = os.getenv('BINANCE_SECRET_KEY')
 
-# Instância CCXT apenas para tickers de volume (rotas públicas spot)
 exchange = ccxt.binance({
     'apiKey': API_KEY,
     'secret': SECRET_KEY,
@@ -31,7 +30,7 @@ exchange = ccxt.binance({
 exchange.urls['api']['public'] = 'https://data-api.binance.vision/api/v3'
 
 TIMEFRAME = '1h'
-LIMIAR_DECISAO = 0.70
+LIMIAR_DECISAO = 0.60  # Reduzido de 0.70 para 0.60 (60%) para gerar mais sinais
 VALOR_INVESTIMENTO_USDT = 20.0
 STOP_LOSS_PCT = 0.02
 TAKE_PROFIT_PCT = 0.04
@@ -73,7 +72,6 @@ def auditar_posicoes_abertas():
         take_profit = float(row['take_profit_preco'])
 
         try:
-            # Requisição direta para cotação atual (evita erro 451)
             pair_slug = symbol.replace('/', '')
             r = requests.get(f"https://data-api.binance.vision/api/v3/ticker/price?symbol={pair_slug}", timeout=10)
             preco_atual = float(r.json()['price'])
@@ -128,6 +126,7 @@ def registrar_nova_posicao(data_hora, symbol, preco, prob):
 # FILTROS DE MERCADO E DADOS
 # ==========================================
 def verificar_tendencia_btc():
+    """Retorna True se o BTC está em alta, mas agora apenas avisa sem bloquear totalmente as altcoins."""
     try:
         url = "https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=250"
         response = requests.get(url, timeout=10)
@@ -144,7 +143,7 @@ def verificar_tendencia_btc():
         ma200 = float(df_btc.iloc[-2]['MA200'])
 
         em_alta = ultimo_fechamento > ma200
-        status_txt = "TENDÊNCIA DE ALTA 🟢" if em_alta else "TENDÊNCIA DE BAIXA 🔴 (Entradas Bloqueadas)"
+        status_txt = "TENDÊNCIA DE ALTA 🟢" if em_alta else "TENDÊNCIA DE BAIXA 🔴 (Modo Flexível Ativo)"
         print(f"📊 Filtro Macro BTC/USDT: Preço ${ultimo_fechamento:.2f} | MM200 ${ma200:.2f} -> {status_txt}")
         return em_alta
     except Exception as e:
@@ -181,7 +180,7 @@ def obter_top20_moedas():
 def rodar_varredura():
     data_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')
     print("=" * 65)
-    print(f"  VARREDURA E EXECUÇÃO AUTOMÁTICA DA IA — {data_hora}")
+    print(f"  VARREDURA E EXECUÇÃO AUTOMÁTICA DA IA (FLEXÍVEL) — {data_hora}")
     print("=" * 65)
 
     inicializar_csv()
@@ -194,7 +193,7 @@ def rodar_varredura():
         booster.load_model(MODEL_PATH)
         
         top20 = obter_top20_moedas()
-        print(f"\n🔎 Analisando o Top {len(top20)} ativos do mercado...")
+        print(f"\n🔎 Analisando o Top {len(top20)} ativos do mercado (Limiar: {int(LIMIAR_DECISAO*100)}%)...")
         sinais_encontrados = 0
 
         for symbol in top20:
@@ -232,22 +231,21 @@ def rodar_varredura():
 
                 prob = float(booster.predict(dmatrix_input)[0])
 
+                # Condição flexibilizada: se atingir 60% e a média móvel da altcoin estiver ok, abre a ordem (mesmo com BTC em baixa)
                 if prob >= LIMIAR_DECISAO and ma200 > 1.0:
                     sinais_encontrados += 1
-                    if btc_favoravel:
-                        print(f"🚨 [SINAL DE COMPRA] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
-                        registrar_nova_posicao(data_hora, symbol, preco_atual, prob)
-                    else:
-                        print(f"⚠️ [IGNORADO/FILTRO BTC] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                    aviso_btc = "" if btc_favoravel else " (⚠️ Alerta: BTC em baixa)"
+                    print(f"🚨 [SINAL DE COMPRA REGISTRADO] -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}{aviso_btc}")
+                    registrar_nova_posicao(data_hora, symbol, preco_atual, prob)
                 else:
-                    print(f"🟡 [NEUTRO]           -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
+                    print(f"🟡 [NEUTRO]                    -> {symbol:<10} | Preço: ${preco_atual:<10.4f} | Prob: {prob:.2%}")
 
             except Exception as e:
                 print(f"⚠️ Erro ao processar {symbol}: {e}")
                 continue
 
         if sinais_encontrados == 0:
-            print("\n🏁 Varredura concluída: Nenhum ativo atingiu o limiar de alta necessário nesta rodada.")
+            print("\n🏁 Varredura concluída: Nenhum ativo atingiu o novo limiar de 60% nesta rodada.")
 
     except Exception as e:
         print(f"❌ Erro na execução principal: {e}")
